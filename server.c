@@ -1,33 +1,56 @@
-/* A simple server in the internet domain using TCP
-The port number is passed as an argument 
-
-
- To compile: gcc server.c -o server 
+/* 	Computer Systems COMP30023 Part B
+*	by Samuel Xu #835273, samuelx@student.unimelb.edu.au  
+*
+*	Using the provided server.c code given in Workshop 3
+*
+*  	This is a simple HTTP server program which should serve certain content 
+*	with a given GET request.
+*	It simply returns HTTP200 response and a file if it's found, and 404 if
+*	not.
+*   This server uses a basic implementation of Pthreads to process incoming
+*	requests and sending messages. 
+*
+*	
+*
 */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h> 
+#include <arpa/inet.h> 
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-
+#include <pthread.h>
 
 int main(int argc, char **argv)
 {
+	// Main should read input and start the necessary servers with Pthread
+	// This should take in 2 command line arguments:
+	// Port number and string path to root web dir
+
 	int sockfd, newsockfd, portno;// clilen;
 	char buffer[256];
 	struct sockaddr_in serv_addr, cli_addr;
 	socklen_t clilen;
 	int n;
 
-	if (argc < 2) 
+	// Get current dir for later relative response
+	char* root_dir;
+
+	// Check that the correct number of arguments have been supplied
+	if (argc < 3) 
 	{
-		fprintf(stderr,"ERROR, no port provided\n");
+		fprintf(stderr,"ERROR, Incorrect number of arguments supplied.\n
+						Usage: ./server <port number> <path to content>\n");
 		exit(1);
 	}
 
+	// Parse arguments
+	portno = atoi(argv[1]);
+	strcopy(root_dir, argv[2]);
+	
 	 /* Create TCP socket */
 	
 	sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -41,8 +64,6 @@ int main(int argc, char **argv)
 	
 	bzero((char *) &serv_addr, sizeof(serv_addr));
 
-	portno = atoi(argv[1]);
-	
 	/* Create address we're going to listen on (given port number)
 	 - converted to network byte order & any IP address for 
 	 this machine */
@@ -86,15 +107,15 @@ int main(int argc, char **argv)
 	
 	n = read(newsockfd,buffer,255);
 
+	/* Parse input */
+
+
+
 	if (n < 0) 
 	{
 		perror("ERROR reading from socket");
 		exit(1);
 	}
-	
-	printf("Here is the message: %s\n",buffer);
-
-	n = write(newsockfd,"I got your message",18);
 	
 	if (n < 0) 
 	{

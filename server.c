@@ -113,55 +113,74 @@ int main(int argc, char **argv)
 	clilen = sizeof(cli_addr);
 
 	buffer = malloc(sizeof(char)*1000);
-	// while (1) {
+    pid_t pid;
+    int child = 0;
+    
+    while(1)
+    {
+        if(child <= 10)
+        {
+            child++;
+            pid = fork();
+        }
+        if(pid == -1)
+        {
+            fprintf(stderr,"ERROR on forking\n");
+            exit (1);
+        }
+        if (pid == 0)
+        {	
+            while(1)
+            {
+				newsockfd = accept(	sockfd, (struct sockaddr *) &cli_addr, 
+									&clilen);
+
+				// printf("newsockfd %d\n", newsockfd);
+
+				if (newsockfd < 0) 
+				{
+					perror("ERROR on accept");
+					exit(1);
+				}
+				
+				// printf("Connection Accepted!\n");
 
 
-	newsockfd = accept(	sockfd, (struct sockaddr *) &cli_addr, 
-						&clilen);
 
-	// printf("newsockfd %d\n", newsockfd);
+				bzero(buffer,256);
 
-	if (newsockfd < 0) 
-	{
-		perror("ERROR on accept");
-		exit(1);
+				/* Read characters from the connection,
+					then process */
+
+				n = read(newsockfd,buffer,255);
+
+				// printf("read request: \n\n%s\n", buffer);
+
+				request_t request = parseRequest(buffer, root_dir);
+
+				printRequest(request);
+
+				respond(request, newsockfd);
+
+				if (n < 0) 
+				{
+					perror("ERROR reading from socket");
+					exit(1);
+				}
+				
+				if (n < 0) 
+				{
+					perror("ERROR writing to socket");
+					exit(1);
+				}
+				close(sockfd);
+			}
+		}
 	}
-	
-	// printf("Connection Accepted!\n");
-
-
-
-	bzero(buffer,256);
-
-	/* Read characters from the connection,
-		then process */
-
-	n = read(newsockfd,buffer,255);
-
-	// printf("read request: \n\n%s\n", buffer);
-
-	request_t request = parseRequest(buffer, root_dir);
-
-	printRequest(request);
-
-	respond(request, newsockfd);
-
-	if (n < 0) 
-	{
-		perror("ERROR reading from socket");
-		exit(1);
-	}
-	
-	if (n < 0) 
-	{
-		perror("ERROR writing to socket");
-		exit(1);
-	}
-	
 	/* close socket */
 	
-	close(sockfd);
-	//}
+	
+	
 	
 	return 0; 
 }
@@ -225,7 +244,7 @@ char* getContent(char* filepath) {
     long length = ftell(file);
     fseek(file, 0, SEEK_SET);
     char *buffer = (char *) malloc(length + 1);
-    //buffer[length] = '\0';
+    buffer[length] = '\0';
     fread(buffer, 1, length, file);
     fclose(file);
     return buffer;

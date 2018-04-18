@@ -30,13 +30,21 @@ typedef struct {
 	char* version;
 } request_t;
 
+typedef struct {
+	char* root_dir;
+	int portno;
+	int newsockfd;
+	int thread;
+} conn_handle;
+
 request_t parseRequest(char *raw_request, char *root_dir);
 void printRequest(request_t request);
 int checkPath(char* token);
 char* getFileType(char* filepath);
 char* buildResponse(request_t request);
-char* getContent(char* filepath);
+void sendContent(char* filepath, int newsockfd);
 void respond(request_t request, int newsockfd);
+void *connection_handler(void *args);
 
 int main(int argc, char **argv)
 {
@@ -45,13 +53,11 @@ int main(int argc, char **argv)
 	// Port number and string path to root web dir
 
 	int sockfd, newsockfd, portno;// clilen;
-	char* buffer;
 	struct sockaddr_in serv_addr, cli_addr;
 	socklen_t clilen;
 	int n;
 
-	// Get current dir for later relative response
-	char* root_dir;
+	conn_handle input;
 
 	// Check that the correct number of arguments have been supplied
 	if (argc < 3) 
@@ -62,12 +68,13 @@ int main(int argc, char **argv)
 	}
 
 	// Parse arguments
-	portno = atoi(argv[1]);
-	root_dir = (char *) malloc(sizeof(argv[2]));
-	strcpy(root_dir, argv[2]);
+	input.portno = atoi(argv[1]);
+	input.root_dir = (char *) malloc(sizeof(argv[2])+1);
+	strcpy(input.root_dir, argv[2]);
+	//strcat(input.root_dir, "/");
 
-	// printf("Port number input: %d\n", portno);
-	// printf("Root directory for request: %s\n", root_dir);
+	printf("Port number input: %d\n", input.portno);
+	printf("Root directory for request: %s\n", input.root_dir);
 	
 	 /* Create TCP socket */
 	
@@ -89,7 +96,7 @@ int main(int argc, char **argv)
 	
 	serv_addr.sin_family = AF_INET;
 	serv_addr.sin_addr.s_addr = INADDR_ANY;
-	serv_addr.sin_port = htons(portno);  // store in machine-neutral format
+	serv_addr.sin_port = htons(input.portno);  // store in machine-neutral format
 
 	 /* Bind address to the socket */
 	
@@ -112,114 +119,106 @@ int main(int argc, char **argv)
 
 	clilen = sizeof(cli_addr);
 
-	buffer = malloc(sizeof(char)*1000);
-    pid_t pid;
-    int child = 0;
-    
-    while(1)
-    {
-        if(child <= 10)
-        {
-            child++;
-            pid = fork();
-        }
-        if(pid == -1)
-        {
-            fprintf(stderr,"ERROR on forking\n");
-            exit (1);
-        }
-        if (pid == 0)
-        {	
-            while(1)
-            {
-				newsockfd = accept(	sockfd, (struct sockaddr *) &cli_addr, 
-									&clilen);
+    pthread_t snifferThread;
+    while(1) {
+		input.newsockfd = accept(	sockfd, (struct sockaddr *) &cli_addr, 
+							&clilen);
 
-				// printf("newsockfd %d\n", newsockfd);
+		// printf("newsockfd %d\n", newsockfd);
 
-				if (newsockfd < 0) 
-				{
-					perror("ERROR on accept");
-					exit(1);
-				}
-				
-				// printf("Connection Accepted!\n");
-
-
-
-				bzero(buffer,256);
-
-				/* Read characters from the connection,
-					then process */
-
-				n = read(newsockfd,buffer,255);
-
-				// printf("read request: \n\n%s\n", buffer);
-
-				request_t request = parseRequest(buffer, root_dir);
-
-				printRequest(request);
-
-				respond(request, newsockfd);
-
-				if (n < 0) 
-				{
-					perror("ERROR reading from socket");
-					exit(1);
-				}
-				
-				if (n < 0) 
-				{
-					perror("ERROR writing to socket");
-					exit(1);
-				}
-				close(sockfd);
-			}
+		if (input.newsockfd < 0) 
+		{
+			perror("ERROR on accept");
+			exit(1);
 		}
+		
+		// printf("Connection Accepted!\n");
+		input.thread = (int)snifferThread;
+		
+		pthread_create(&snifferThread, NULL, connection_handler, (void *) &input);
+
+		
 	}
-	/* close socket */
-	
-	
-	
 	
 	return 0; 
+}
+
+void *connection_handler(void *args) {
+	int n;
+	char *buffer;
+	conn_handle vars = *((conn_handle *) args);
+	printf("Starting thread %d\n", vars.thread);
+
+	buffer = malloc(sizeof(char) * 1000);
+
+	bzero(buffer,1000);
+
+	/* Read characters from the connection,
+		then process */
+
+	n = read(vars.newsockfd,buffer,1000);
+
+	// printf("read request: \n\n%s\n", buffer);
+
+	request_t request = parseRequest(buffer, vars.root_dir);
+
+	//printRequest(request);
+
+	respond(request, vars.newsockfd);
+
+	if (n < 0) 
+	{
+		perror("ERROR reading from socket");
+		exit(1);
+	}
+	
+	if (n < 0) 
+	{
+		perror("ERROR writing to socket");
+		exit(1);
+	}
+	close(vars.newsockfd);
+	pthread_exit(NULL);
+	return;
 }
 
 void respond(request_t request, int newsockfd) {
 	// printf("Building response...\n");
 	char* response = buildResponse(request);
-	// printf("Full Response: \n\n%s", response);
 	write(newsockfd, response, strlen(response));
+	if (request.code == 200) {
+		sendContent(request.filepath, newsockfd);
+	}
 }
 
 char* buildResponse(request_t request) {
 	char *filetype;
 	char *response = NULL;
-	char *content;
 	if (request.code == 404) {
 		response = malloc(sizeof(char) * 100);
 		sprintf(response, "HTTP/%s 404\n", request.version);
 	}
 	else if (request.code == 200) {
-		filetype = getFileType(request.filepath);
-		content = getContent(request.filepath);
-		// printf("response file type: %s\n", filetype);	
-		// printf("response content: %s\n", content);
-		response = malloc(sizeof(char) * 100 + strlen(filetype) + strlen(content));
-		sprintf(response, "HTTP/%s 200 OK\nContent-Type: %s\n\n%s", request.version, filetype, content);
+		filetype = getFileType(request.filepath);	
+		response = malloc(sizeof(char) * 100 + strlen(filetype));
+		sprintf(response, "HTTP/%s 200 OK\nContent-Type: %s\n\n", request.version, filetype);
 	}
+	printf("Serving response:\n\n%s \n\n", response);
 	return response;
 }
 
 char* getFileType(char* filepath) {
-	// printf("getting filetype from %s...\n", filepath);
+	printf("getting filetype from %s...\n", filepath);
 	char* tmp = NULL;
 	char* filetype = NULL;
 
 	tmp = malloc(sizeof(char) * 4);
 	filetype = malloc(sizeof(char) * 10);
-	sscanf(filepath, "%*[A-z0-9/:\n].%s", tmp);
-
+	sscanf(filepath, "./%*[A-z0-9/:\n].%s", tmp);
+	if (tmp == NULL) {
+		printf("Trying again...\n");
+		sscanf(filepath, "%*[A-z0-9/:\n].%s", tmp);
+	}
 	// printf("File type of request is: %s\n", tmp);
 	if ((strcmp(tmp, "html") == 0)) {
 		strcpy(filetype, "text/html");
@@ -236,17 +235,19 @@ char* getFileType(char* filepath) {
 	return filetype;
 }
 
-char* getContent(char* filepath) {
-	// printf("getting content...\n");
-	FILE* file = fopen(filepath, "r");
+void sendContent(char* filepath, int newsockfd) {
+	printf("getting content...\n");
+	FILE* file = fopen(filepath, "rb");
 	// assert(file);
     fseek(file, 0, SEEK_END);
-    long length = ftell(file);
+    unsigned long length = ftell(file);
     fseek(file, 0, SEEK_SET);
-    char *buffer = (char *) malloc(length + 1);
-    buffer[length] = '\0';
-    fread(buffer, 1, length, file);
+    unsigned char *buffer = (char *) malloc(length+1);
+    fread(buffer,length,sizeof(unsigned char),file);
+
+    write(newsockfd, buffer, length);
     fclose(file);
+    
     return buffer;
 }
 
@@ -260,7 +261,7 @@ request_t parseRequest(char *raw_request, char *root_dir) {
 	tmpPath = malloc(sizeof(char) * strlen(raw_request));
 	filePath = malloc(sizeof(char) * strlen(raw_request));
 	version = malloc(sizeof(char) * 3);
-	// printf("Scanning request: %s\n", raw_request);
+	//printf("Scanning request: %s\n", raw_request);
 	sscanf(raw_request, "GET %s HTTP/%s %*[A-z0-9/:\n]", tmpPath, version);
 	sprintf(filePath, "%s%s", root_dir, tmpPath);
 
@@ -286,7 +287,7 @@ void printRequest(request_t request) {
 }
 
 int checkPath(char* token) {
-	// printf("Checking path: %s\n", token);
+	printf("Checking path: %s\n", token);
 	if (fopen(token, "r") == NULL) {
 		// printf("file not found, giving 404\n");
 		return 404;

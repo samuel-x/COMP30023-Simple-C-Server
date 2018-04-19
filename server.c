@@ -1,7 +1,7 @@
 /* 	Computer Systems COMP30023 Part B
 *	by Samuel Xu #835273, samuelx@student.unimelb.edu.au  
 *
-*	Using the provided server.c code given in Workshop 3
+*	Using the provided server.c code given in Lab Week 3
 *
 *  	This is a simple HTTP server program which should serve certain content 
 *	with a given GET request.
@@ -10,7 +10,13 @@
 *   This server uses a basic implementation of Pthreads to process incoming
 *	requests and sending messages. 
 *
-*	
+*	Style Notes:
+	Following the provided server.c style, we'll be doing the following:
+		- Character ruler of 78 characters. This allows us to read in consoles
+			like VI or nano without wordwrap
+		- Use underscores when there are names_with_spaces
+		- We'll be putting asterisks before the variable names, not the type
+			(allows us to define )
 *
 */
 
@@ -23,6 +29,13 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <pthread.h>
+
+#define CONN_MAX 10
+#define BUFFER_SIZE 256
+#define VERSION_LEN 3
+#define BAD_REQUEST 400
+#define NOT_FOUND 404
+#define OK 200
 
 typedef struct {
 	char* filepath;
@@ -37,6 +50,7 @@ typedef struct {
 	int thread;
 } conn_handle;
 
+void *connection_handler(void *args);
 request_t parseRequest(char *raw_request, char *root_dir);
 void printRequest(request_t request);
 int checkPath(char* token);
@@ -44,7 +58,6 @@ char* getFileType(char* filepath);
 char* buildResponse(request_t request);
 void sendContent(char* filepath, int newsockfd);
 void respond(request_t request, int newsockfd);
-void *connection_handler(void *args);
 
 int main(int argc, char **argv)
 {
@@ -52,18 +65,17 @@ int main(int argc, char **argv)
 	// This should take in 2 command line arguments:
 	// Port number and string path to root web dir
 
-	int sockfd, newsockfd, portno;// clilen;
-	struct sockaddr_in serv_addr, cli_addr;
-	socklen_t clilen;
-	int n;
+	int sockfd;						// socket file descriptor & port
+	struct sockaddr_in serv_addr, cli_addr; // server/client addresses
+	socklen_t clilen;						// Length of client address
 
-	conn_handle input;
+	conn_handle input;				// Struct to hold variables for pthread 
 
 	// Check that the correct number of arguments have been supplied
 	if (argc < 3) 
 	{
-		fprintf(stderr,"ERROR, Incorrect number of arguments supplied.\n\
-						Usage: server <port number> <path to content>\n");
+		perror("ERROR, Incorrect number of arguments supplied.\n\
+				Usage: server <port number> <path to content>\n");
 		exit(1);
 	}
 
@@ -71,16 +83,10 @@ int main(int argc, char **argv)
 	input.portno = atoi(argv[1]);
 	input.root_dir = (char *) malloc(sizeof(argv[2])+1);
 	strcpy(input.root_dir, argv[2]);
-	//strcat(input.root_dir, "/");
-
-	printf("Port number input: %d\n", input.portno);
-	printf("Root directory for request: %s\n", input.root_dir);
 	
-	 /* Create TCP socket */
+	 // Create a TCP socket
 	
 	sockfd = socket(AF_INET, SOCK_STREAM, 0);
-
-	// printf("socket file desciptor: %d\n", sockfd);
 
 	if (sockfd < 0) 
 	{
@@ -90,15 +96,13 @@ int main(int argc, char **argv)
 	
 	bzero((char *) &serv_addr, sizeof(serv_addr));
 
-	/* Create address we're going to listen on (given port number)
-	 - converted to network byte order & any IP address for 
-	 this machine */
+	// Create an address that this machine is going to listen on
 	
 	serv_addr.sin_family = AF_INET;
 	serv_addr.sin_addr.s_addr = INADDR_ANY;
-	serv_addr.sin_port = htons(input.portno);  // store in machine-neutral format
+	serv_addr.sin_port = htons(input.portno);  
 
-	 /* Bind address to the socket */
+	// Bind our address to our socket
 	
 	if (bind(sockfd, (struct sockaddr *) &serv_addr,
 			sizeof(serv_addr)) < 0) 
@@ -107,24 +111,23 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 	
-	/* Listen on socket - means we're ready to accept connections - 
-	 incoming connection requests will be queued */
+	// Listen on our socket. We'll accept CONN_MAX connections maximum.
 
-	listen(sockfd,10);
+	listen(sockfd, CONN_MAX);
 
-	// printf("listening...\n");
-
-	/* Accept a connection - block until a connection is ready to
-	 be accepted. Get back a new file descriptor to communicate on. */
+	// Get the size of our client address for accepting connections later.
 
 	clilen = sizeof(cli_addr);
 
-    pthread_t snifferThread;
+	// Make an identifier for our threads
+    pthread_t thread_id;
+
+    // Keep serving requests (and hope we don't get DDoS'd)
     while(1) {
+
+		// Accept a connection!
 		input.newsockfd = accept(	sockfd, (struct sockaddr *) &cli_addr, 
 							&clilen);
-
-		// printf("newsockfd %d\n", newsockfd);
 
 		if (input.newsockfd < 0) 
 		{
@@ -132,10 +135,10 @@ int main(int argc, char **argv)
 			exit(1);
 		}
 		
-		// printf("Connection Accepted!\n");
-		input.thread = (int)snifferThread;
+		input.thread = (int)thread_id;
 		
-		pthread_create(&snifferThread, NULL, connection_handler, (void *) &input);
+		// Create a thread to handle the connection.
+		pthread_create(&thread_id, NULL, connection_handler, (void *) &input);
 
 		
 	}
@@ -144,48 +147,91 @@ int main(int argc, char **argv)
 }
 
 void *connection_handler(void *args) {
+	// This handles incoming requests, parses them and responds with the
+	// specified file or error code.
+
 	int n;
 	char *buffer;
+
+	// Cast our void pointer back to struct so we can get the arguments
+	// passed in from main()
 	conn_handle vars = *((conn_handle *) args);
-	printf("Starting thread %d\n", vars.thread);
 
-	buffer = malloc(sizeof(char) * 1000);
+	// Read in characters from our client.
+	// The maximum request size will be of BUFFER_SIZE.
+	buffer = malloc(sizeof(char) * BUFFER_SIZE);
+	bzero(buffer,BUFFER_SIZE);
+	n = read(vars.newsockfd,buffer,BUFFER_SIZE);
 
-	bzero(buffer,1000);
+	// Check that we received the message successfully.
+	if (n < 0) 
+	{
+		perror("ERROR reading from socket. Make sure you aren't sending\n\
+				a request that is too large.");
+		exit(1);
+	}
 
-	/* Read characters from the connection,
-		then process */
-
-	n = read(vars.newsockfd,buffer,1000);
-
-	// printf("read request: \n\n%s\n", buffer);
-
+	// Parse the message from our client into a request.
 	request_t request = parseRequest(buffer, vars.root_dir);
 
-	//printRequest(request);
-
+	// Respond to the request accordingly.
 	respond(request, vars.newsockfd);
 
-	if (n < 0) 
-	{
-		perror("ERROR reading from socket");
-		exit(1);
-	}
-	
-	if (n < 0) 
-	{
-		perror("ERROR writing to socket");
-		exit(1);
-	}
+	// Close the connection and exit our thread.
 	close(vars.newsockfd);
 	pthread_exit(NULL);
-	return;
 }
 
+request_t parseRequest(char *raw_request, char *root_dir) {
+	// This should take a request and parse it into the request_t struct
+	char *tmp_path;
+	char *file_path;
+	char *version;
+	int test_code;
+	request_t request;
+	
+	// Malloc all our strings
+	tmp_path = malloc(sizeof(char) * strlen(raw_request));
+	file_path = malloc(sizeof(char) * strlen(raw_request));
+	version = malloc(sizeof(char) * VERSION_LEN);
+
+	// Scan the request for the path
+	sscanf(raw_request, "GET %s HTTP/%s %*[A-z0-9/:\n]", tmp_path, version);
+	sprintf(file_path, "%s%s", root_dir, tmp_path);
+	test_code = checkPath(file_path);
+
+	// If our temp file path is NULL, then we have a bad request (not GET)
+	// Otherwise set the necessary variables in the request struct.
+	if (tmp_path == NULL) {
+		request.code = BAD_REQUEST;
+		request.filepath = NULL;
+		request.version = version;
+	} 
+	else if (test_code == NOT_FOUND) {
+		// 404 Error
+		request.code = NOT_FOUND;
+		request.filepath = NULL;
+		request.version = version;
+	}
+	else if (test_code == OK) {
+		// 200 good request
+		request.code = OK;
+		request.filepath = malloc(sizeof(char) * strlen(raw_request));
+		request.version = version;
+		strcpy(request.filepath, file_path);
+	}
+
+	return request;
+};
+
 void respond(request_t request, int newsockfd) {
-	// printf("Building response...\n");
+	// Respond to the request!
+
+	// First we build the header and write it
 	char* response = buildResponse(request);
 	write(newsockfd, response, strlen(response));
+
+	// Then we send the file contents
 	if (request.code == 200) {
 		sendContent(request.filepath, newsockfd);
 	}
@@ -242,48 +288,17 @@ void sendContent(char* filepath, int newsockfd) {
     fseek(file, 0, SEEK_END);
     unsigned long length = ftell(file);
     fseek(file, 0, SEEK_SET);
-    unsigned char *buffer = (char *) malloc(length+1);
+    unsigned char *buffer = (unsigned char *) malloc(length+1);
     fread(buffer,length,sizeof(unsigned char),file);
 
     write(newsockfd, buffer, length);
     fclose(file);
-    
-    return buffer;
 }
 
-request_t parseRequest(char *raw_request, char *root_dir) {
-	char *tmpPath;
-	char *filePath;
-	char *version;
-	int testCode;
-	request_t request;
-	
-	tmpPath = malloc(sizeof(char) * strlen(raw_request));
-	filePath = malloc(sizeof(char) * strlen(raw_request));
-	version = malloc(sizeof(char) * 3);
-	//printf("Scanning request: %s\n", raw_request);
-	sscanf(raw_request, "GET %s HTTP/%s %*[A-z0-9/:\n]", tmpPath, version);
-	sprintf(filePath, "%s%s", root_dir, tmpPath);
-
-	testCode = checkPath(filePath);
-	if (testCode == 404) {
-		request.code = 404;
-		request.filepath = NULL;
-		request.version = version;
-	}
-	else if (testCode == 200) {
-		request.code = 200;
-		request.filepath = malloc(sizeof(char) * strlen(raw_request));
-		request.version = version;
-		strcpy(request.filepath, filePath);
-	}
-
-	return request;
-};
 
 void printRequest(request_t request) {
-	// printf("Code: %d\n", request.code);
-	// printf("Path: %s\n", request.filepath);
+	printf("Code: %d\n", request.code);
+	printf("Path: %s\n", request.filepath);
 }
 
 int checkPath(char* token) {

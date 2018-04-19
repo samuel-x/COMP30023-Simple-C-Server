@@ -1,16 +1,32 @@
-/* 	Computer Systems COMP30023 Part B
-*	by Samuel Xu #835273, samuelx@student.unimelb.edu.au  
+/*  Computer Systems COMP30023 Part A
+*   name: Samuel Xu 
+*   studentno: #835273
+*   email: samuelx@student.unimelb.edu.au
+*   login: samuelx
 *
-*	Using the provided server.c code given in Workshop 3
+*   Using the provided server.c code given in Lab Week 3
 *
-*  	This is a simple HTTP server program which should serve certain content 
-*	with a given GET request.
-*	It simply returns HTTP200 response and a file if it's found, and 404 if
-*	not.
+*   This is a simple HTTP server program which should serve certain content 
+*   with a given GET request.
+*   It simply returns HTTP200 response and a file if it's found, and 404 if
+*   not.
 *   This server uses a basic implementation of Pthreads to process incoming
-*	requests and sending messages. 
+*   requests and sending messages. 
 *
-*	
+*   Style Notes:
+*   Following the provided server.c style, we'll be doing the following:
+*       - Character ruler of 78 characters. This allows us to read in consoles
+*           like VI or nano without word wrap
+*
+*       - Use underscores when there are names_with_spaces, in both functions
+*           and variables
+*
+*       - We'll be putting asterisks before the variable names, not the type
+*           (allows us to define pointers and normal types in the same line)
+*
+*       - #defines are ALL_CAPITAL_LETTERS
+*
+*       - Convert tabs to spaces
 *
 */
 
@@ -23,277 +39,360 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <assert.h>
+
+    /*  Sizes   */
+#define CONN_MAX        10      // Maximum connections accepted
+#define BUFFER_SIZE     256     // Size of buffer (used for requests/response)
+#define FILE_TYPE_LEN   32      // Maximum file type length
+#define OP_SIZE         4       // Maximum length of primitives
+
+    /*  Status Codes    */
+#define BAD_REQUEST     400 
+#define NOT_FOUND       404
+#define OK              200
+
+    /*  Types   */
+#define HTML_TYPE   "html"
+#define HTML_MIME   "text/html"
+#define CSS_TYPE    "css"
+#define CSS_MIME    "text/css"
+#define JS_TYPE     "js"
+#define JS_MIME     "text/javascript"
+#define JPG_TYPE    "jpg"
+#define JPG_MIME    "image/jpeg"
+
+    /*  Responses   */
+#define GET                     "GET"
+#define NOT_FOUND_RESPONSE      "HTTP/1.0 404\n"
+#define BAD_REQUEST_RESPONSE    "HTTP/1.0 400\n"
+#define RESPONSE_HEADER         "HTTP/1.0 200 OK\nContent-Type:"
 
 typedef struct {
-	char* filepath;
-	int code;
-	char* version;
+    char* file_path;
+    int code;
 } request_t;
 
 typedef struct {
-	char* root_dir;
-	int portno;
-	int newsockfd;
-	int thread;
-} conn_handle;
+    char* root_dir;
+    int socket_file_desc;
+    int thread;
+} thread_input_t;
 
-request_t parseRequest(char *raw_request, char *root_dir);
-void printRequest(request_t request);
-int checkPath(char* token);
-char* getFileType(char* filepath);
-char* buildResponse(request_t request);
-void sendContent(char* filepath, int newsockfd);
-void respond(request_t request, int newsockfd);
 void *connection_handler(void *args);
+request_t parse_request(char *raw_request, char *root_dir);
+int check_path(char *file_path);
+char *get_file_type(char *file_path);
+char *build_response(request_t request);
+void send_content(char *file_path, int socket_file_desc);
+void respond(request_t request, int socket_file_desc);
+
+static void *safe_malloc(size_t size) {
+    // This malloc checks if a malloc has completed successfully before
+    // continuing
+    void *pointer = malloc(size);
+    if (!pointer) {
+        perror("Bad malloc, out of memory!\n");
+        exit(1);
+    }
+
+    return pointer;
+}
 
 int main(int argc, char **argv)
 {
-	// Main should read input and start the necessary servers with Pthread
-	// This should take in 2 command line arguments:
-	// Port number and string path to root web dir
+    // Main should read input and start the necessary servers with Pthread
+    // This should take in 2 command line arguments:
+    // Port number and string path to root web dir
 
-	int sockfd, newsockfd, portno;// clilen;
-	struct sockaddr_in serv_addr, cli_addr;
-	socklen_t clilen;
-	int n;
+    int sockfd, portno;                     // socket file descriptor & port
+    struct sockaddr_in serv_addr, cli_addr; // server/client addresses
+    socklen_t clilen;                       // Length of client address
+    char* root_dir;
+     
 
-	conn_handle input;
+    // Check that the correct number of arguments have been supplied
+    if (argc < 3) 
+    {
+        perror("ERROR, Incorrect number of arguments supplied.\n\
+                Usage: server <port number> <path to content>\n");
+        exit(1);
+    }
 
-	// Check that the correct number of arguments have been supplied
-	if (argc < 3) 
-	{
-		fprintf(stderr,"ERROR, Incorrect number of arguments supplied.\n\
-						Usage: server <port number> <path to content>\n");
-		exit(1);
-	}
+    // Parse arguments
+    portno = atoi(argv[1]);
+    root_dir = (char *) safe_malloc(sizeof(argv[2])+1);
+    strcpy(root_dir, argv[2]);
+    
+     // Create a TCP socket
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
 
-	// Parse arguments
-	input.portno = atoi(argv[1]);
-	input.root_dir = (char *) malloc(sizeof(argv[2])+1);
-	strcpy(input.root_dir, argv[2]);
-	//strcat(input.root_dir, "/");
+    if (sockfd < 0) 
+    {
+        perror("ERROR opening socket");
+        exit(1);
+    }
+    
 
-	printf("Port number input: %d\n", input.portno);
-	printf("Root directory for request: %s\n", input.root_dir);
-	
-	 /* Create TCP socket */
-	
-	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    // Create an address that this machine is going to listen on
+    bzero((char *) &serv_addr, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    serv_addr.sin_port = htons(portno);  
 
-	// printf("socket file desciptor: %d\n", sockfd);
+    // Bind our address to our socket
+    if (bind(sockfd, (struct sockaddr *) &serv_addr,
+            sizeof(serv_addr)) < 0) 
+    {
+        perror("ERROR on binding");
+        exit(1);
+    }
+    
+    // Listen on our socket. We'll accept CONN_MAX connections maximum.
+    listen(sockfd, CONN_MAX);
 
-	if (sockfd < 0) 
-	{
-		perror("ERROR opening socket");
-		exit(1);
-	}
-	
-	bzero((char *) &serv_addr, sizeof(serv_addr));
+    // Get the size of our client address for accepting connections later.
+    clilen = sizeof(cli_addr);
+    
+    // Make an identifier for our threads
+    pthread_t thread_id;        
 
-	/* Create address we're going to listen on (given port number)
-	 - converted to network byte order & any IP address for 
-	 this machine */
-	
-	serv_addr.sin_family = AF_INET;
-	serv_addr.sin_addr.s_addr = INADDR_ANY;
-	serv_addr.sin_port = htons(input.portno);  // store in machine-neutral format
-
-	 /* Bind address to the socket */
-	
-	if (bind(sockfd, (struct sockaddr *) &serv_addr,
-			sizeof(serv_addr)) < 0) 
-	{
-		perror("ERROR on binding");
-		exit(1);
-	}
-	
-	/* Listen on socket - means we're ready to accept connections - 
-	 incoming connection requests will be queued */
-
-	listen(sockfd,10);
-
-	// printf("listening...\n");
-
-	/* Accept a connection - block until a connection is ready to
-	 be accepted. Get back a new file descriptor to communicate on. */
-
-	clilen = sizeof(cli_addr);
-
-    pthread_t snifferThread;
+    // Keep serving requests (and hope we don't get DDoS'd)
     while(1) {
-		input.newsockfd = accept(	sockfd, (struct sockaddr *) &cli_addr, 
-							&clilen);
+        // Accept a connection!
+        int socket_file_desc = accept(sockfd, (struct sockaddr *) &cli_addr, 
+                            &clilen);
+        if (socket_file_desc < 0) 
+        {
+            perror("ERROR on accept");
+            exit(1);
+        }
 
-		// printf("newsockfd %d\n", newsockfd);
+        // Struct to hold variables for pthread
+        thread_input_t input;           
 
-		if (input.newsockfd < 0) 
-		{
-			perror("ERROR on accept");
-			exit(1);
-		}
-		
-		// printf("Connection Accepted!\n");
-		input.thread = (int)snifferThread;
-		
-		pthread_create(&snifferThread, NULL, connection_handler, (void *) &input);
+        input.socket_file_desc = socket_file_desc;
+        input.root_dir = 
+                        (char *) safe_malloc(sizeof(char) * strlen(root_dir));
+        strcpy(input.root_dir, root_dir);
+        input.thread = thread_id;
 
-		
-	}
-	
-	return 0; 
+        // Create a thread to handle the connection.
+        pthread_create(&thread_id, NULL, connection_handler, (void *) &input);
+
+        // Detach our thread once we've finished serving the connection.
+        pthread_detach(thread_id);
+
+
+        
+    }
+    
+    // Close our socket and free remaining variables.
+    close(sockfd);
+    free(root_dir);
+
+    return 0; 
 }
 
 void *connection_handler(void *args) {
-	int n;
-	char *buffer;
-	conn_handle vars = *((conn_handle *) args);
-	printf("Starting thread %d\n", vars.thread);
+    // This handles incoming requests, parses them and responds with the
+    // specified file or error code.
 
-	buffer = malloc(sizeof(char) * 1000);
+    int n;
+    char buffer[BUFFER_SIZE];
 
-	bzero(buffer,1000);
+    // Cast our void pointer back to struct so we can get the arguments
+    // passed in from main()
+    thread_input_t vars = *((thread_input_t *) args);
 
-	/* Read characters from the connection,
-		then process */
+    // Read in characters from our client.
+    // The maximum request size will be of BUFFER_SIZE.
+    bzero(buffer, BUFFER_SIZE);
+    n = read(vars.socket_file_desc, buffer, BUFFER_SIZE);
 
-	n = read(vars.newsockfd,buffer,1000);
+    // Check that we received the message successfully.
+    if (n < 0) 
+    {
+        perror("ERROR reading from socket. Make sure you aren't sending\n\
+                a request that is too large.");
+        exit(1);
+    }
 
-	// printf("read request: \n\n%s\n", buffer);
+    // Parse the message from our client into a request.
+    request_t request = parse_request(buffer, vars.root_dir);
 
-	request_t request = parseRequest(buffer, vars.root_dir);
+    // Respond to the request accordingly.
+    respond(request, vars.socket_file_desc);
 
-	//printRequest(request);
 
-	respond(request, vars.newsockfd);
-
-	if (n < 0) 
-	{
-		perror("ERROR reading from socket");
-		exit(1);
-	}
-	
-	if (n < 0) 
-	{
-		perror("ERROR writing to socket");
-		exit(1);
-	}
-	close(vars.newsockfd);
-	pthread_exit(NULL);
-	return;
-}
-
-void respond(request_t request, int newsockfd) {
-	// printf("Building response...\n");
-	char* response = buildResponse(request);
-	write(newsockfd, response, strlen(response));
-	if (request.code == 200) {
-		sendContent(request.filepath, newsockfd);
-	}
-}
-
-char* buildResponse(request_t request) {
-	char *filetype;
-	char *response = NULL;
-	if (request.code == 404) {
-		response = malloc(sizeof(char) * 100);
-		sprintf(response, "HTTP/%s 404\n", request.version);
-	}
-	else if (request.code == 200) {
-		filetype = getFileType(request.filepath);	
-		response = malloc(sizeof(char) * 100 + strlen(filetype));
-		sprintf(response, "HTTP/%s 200 OK\nContent-Type: %s\n\n", request.version, filetype);
-	}
-	printf("Serving response:\n\n%s \n\n", response);
-	return response;
-}
-
-char* getFileType(char* filepath) {
-	printf("getting filetype from %s...\n", filepath);
-	char* tmp = NULL;
-	char* filetype = NULL;
-
-	tmp = malloc(sizeof(char) * 4);
-	filetype = malloc(sizeof(char) * 10);
-	sscanf(filepath, "./%*[A-z0-9/:\n].%s", tmp);
-	if (tmp == NULL) {
-		printf("Trying again...\n");
-		sscanf(filepath, "%*[A-z0-9/:\n].%s", tmp);
-	}
-	// printf("File type of request is: %s\n", tmp);
-	if ((strcmp(tmp, "html") == 0)) {
-		strcpy(filetype, "text/html");
-	}
-	else if (strcmp(tmp, "css") == 0) {
-		strcpy(filetype, "text/css");
-	}
-	else if (strcmp(tmp, "js") == 0) {
-		strcpy(filetype, "text/javascript");
-	}
-	else if (strcmp(tmp,"jpg") == 0) {
-		sprintf(filetype, "image/jpeg");
-	}
-	return filetype;
-}
-
-void sendContent(char* filepath, int newsockfd) {
-	printf("getting content...\n");
-	FILE* file = fopen(filepath, "rb");
-	// assert(file);
-    fseek(file, 0, SEEK_END);
-    unsigned long length = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    unsigned char *buffer = (char *) malloc(length+1);
-    fread(buffer,length,sizeof(unsigned char),file);
-
-    write(newsockfd, buffer, length);
-    fclose(file);
+    // Free memory
+    free(vars.root_dir);
     
-    return buffer;
+    // Close the connection and exit our thread.
+    close(vars.socket_file_desc);
+    pthread_exit(NULL);
+
 }
 
-request_t parseRequest(char *raw_request, char *root_dir) {
-	char *tmpPath;
-	char *filePath;
-	char *version;
-	int testCode;
-	request_t request;
-	
-	tmpPath = malloc(sizeof(char) * strlen(raw_request));
-	filePath = malloc(sizeof(char) * strlen(raw_request));
-	version = malloc(sizeof(char) * 3);
-	//printf("Scanning request: %s\n", raw_request);
-	sscanf(raw_request, "GET %s HTTP/%s %*[A-z0-9/:\n]", tmpPath, version);
-	sprintf(filePath, "%s%s", root_dir, tmpPath);
+request_t parse_request(char *raw_request, char *root_dir) {
+    // This should take a request and parse it into the request_t struct.
+    char *tmp_path;
+    char *file_path;
+    char primitive[OP_SIZE];
+    int test_code;
+    request_t request;
+    
+    // safe_malloc all our strings.
+    tmp_path = (char *) safe_malloc(sizeof(char) * strlen(raw_request));
+    file_path = (char *) safe_malloc(sizeof(char) * strlen(raw_request));
 
-	testCode = checkPath(filePath);
-	if (testCode == 404) {
-		request.code = 404;
-		request.filepath = NULL;
-		request.version = version;
-	}
-	else if (testCode == 200) {
-		request.code = 200;
-		request.filepath = malloc(sizeof(char) * strlen(raw_request));
-		request.version = version;
-		strcpy(request.filepath, filePath);
-	}
+    // Scan the request for the path.
+    // It will ignore all characters after the primitive and the path.
+    sscanf(raw_request, "%s %s %*[A-z0-9/:\n]", primitive, tmp_path);
+    sprintf(file_path, "%s%s", root_dir, tmp_path);
 
-	return request;
+    // If we don't have a GET request, respond with a 400 bad response error
+    if (strcmp(primitive, GET) != 0) {
+        request.code = BAD_REQUEST;
+        request.file_path = NULL;
+        return request;
+    } 
+
+    // Check if our file actually exists on the server
+    test_code = check_path(file_path);
+
+    if (test_code == NOT_FOUND) {
+        // 404 Error
+        request.code = NOT_FOUND;
+        request.file_path = NULL;
+    }
+    else if (test_code == OK) {
+        // 200 good request
+        request.code = OK;
+        request.file_path = 
+                    (char *) safe_malloc(sizeof(char) * strlen(raw_request));
+        strcpy(request.file_path, file_path);
+    }
+
+    free(tmp_path);
+    free(file_path);
+
+    return request;
 };
 
-void printRequest(request_t request) {
-	// printf("Code: %d\n", request.code);
-	// printf("Path: %s\n", request.filepath);
+
+char *build_response(request_t request) {
+    // This builds a response to send from a specified request
+
+    char *file_type = NULL;
+    char *response = NULL;
+
+    if (request.code == 400) {
+        // If we have a request we can't handle, then return a 400 response
+        response = safe_malloc(sizeof(char) * BUFFER_SIZE);
+        sprintf(response, BAD_REQUEST_RESPONSE);
+    }
+    else if (request.code == 404) {
+        // If we have a invalid path request, then return a 404 response 
+        response = safe_malloc(sizeof(char) * BUFFER_SIZE);
+        sprintf(response, NOT_FOUND_RESPONSE);
+    }
+    else if (request.code == 200) {
+        // Otherwise, return a 200 OK response
+        file_type = get_file_type(request.file_path);   
+        response = safe_malloc(sizeof(char) * BUFFER_SIZE + FILE_TYPE_LEN);
+        sprintf(response, "%s %s\n\n", RESPONSE_HEADER, file_type);
+
+        // Free our file type, since we don't need it anymore.
+        free(file_type);
+    }
+
+    
+    return response;
 }
 
-int checkPath(char* token) {
-	printf("Checking path: %s\n", token);
-	if (fopen(token, "r") == NULL) {
-		// printf("file not found, giving 404\n");
-		return 404;
-	}
-	else {
-		// printf("file %s found! giving code 200\n", token);
-		return 200;
-	}
+char *get_file_type(char* file_path) {
+    // This function gets the file type of the requested file
+
+    char tmp[FILE_TYPE_LEN];
+    char *file_type;
+
+    file_type = safe_malloc(FILE_TYPE_LEN);
+
+    // Scan the specified file path for our file type
+    // (i.e. ignore all characters up until the . character)
+    sscanf(file_path, "./%*[A-z0-9/:\n].%s", tmp);
+    if (tmp == NULL) {
+        // Try again if the path does not include a './' at the beginning
+        sscanf(file_path, "%*[A-z0-9/:\n].%s", tmp);
+    }
+
+    // Translate the file type into the correct MIME format.
+    if ((strcmp(tmp, HTML_TYPE) == 0)) {
+        strcpy(file_type, HTML_MIME);
+    }
+    else if (strcmp(tmp, CSS_TYPE) == 0) {
+        strcpy(file_type, CSS_MIME);
+    }
+    else if (strcmp(tmp, JS_TYPE) == 0) {
+        strcpy(file_type, JS_MIME);
+    }
+    else if (strcmp(tmp, JPG_TYPE) == 0) {
+        sprintf(file_type, JPG_MIME);
+    }
+
+    return file_type;
+}
+
+int check_path(char *file_path) {
+    // This function checks if the file in the path exists.
+    // It will return the necessary error code if the file does not exist,
+    // otherwise return 200.
+
+    if (fopen(file_path, "r") == NULL) {
+        return NOT_FOUND;
+    }
+    else {
+        return OK;
+    }
+}
+
+void respond(request_t request, int socket_file_desc) {
+    // This function responds to the request!
+
+    // First we build the header and write it
+    char *response = build_response(request);
+    write(socket_file_desc, response, strlen(response));
+
+    // Then we send the file contents
+    if (request.code == 200) {
+        send_content(request.file_path, socket_file_desc);
+    }
+
+    // Free our strings
+    free(request.file_path);
+    free(response);
+}
+
+void send_content(char* file_path, int socket_file_desc) {
+    // This function sends the contents of the requested file to the client
+
+    // Open and check our file (with binary flag for images)
+    FILE* file = fopen(file_path, "rb");
+    assert(file);
+
+    // Load the file into a buffer
+    fseek(file, 0, SEEK_END);
+    // Find the length of the file
+    unsigned long length = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    unsigned char *buffer = (unsigned char *) safe_malloc(length+1);
+
+    // Reac in our file to buffer
+    fread(buffer,length,sizeof(unsigned char),file);
+
+    // Write it to the socket!
+    write(socket_file_desc, buffer, length);
+
+    fclose(file);
 }

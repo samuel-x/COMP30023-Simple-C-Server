@@ -1,5 +1,8 @@
-/* 	Computer Systems COMP30023 Part B
-*	by Samuel Xu #835273, samuelx@student.unimelb.edu.au  
+/* 	Computer Systems COMP30023 Part A
+*	name: Samuel Xu 
+*   studentno: #835273
+*	email: samuelx@student.unimelb.edu.au
+*	login: samuelx
 *
 *	Using the provided server.c code given in Lab Week 3
 *

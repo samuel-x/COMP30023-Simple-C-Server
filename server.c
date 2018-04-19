@@ -43,7 +43,7 @@
 
     /*  Sizes   */
 #define CONN_MAX        10      // Maximum connections accepted
-#define BUFFER_SIZE     256     // Size of buffer (used for requests/response)
+#define BUFFER_SIZE     512     // Size of buffer (used for requests/response)
 #define FILE_TYPE_LEN   32      // Maximum file type length
 #define OP_SIZE         4       // Maximum length of primitives
 
